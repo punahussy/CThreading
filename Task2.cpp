@@ -18,7 +18,7 @@ struct thread_data
 float calc_member(int n) {
     float num = pow(-1.0, n - 1);
     float den = pow(n, n);
-    return n;
+    return num / den;
 }
 
 //Вычисляет ряд членов в потоке

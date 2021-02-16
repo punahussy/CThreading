@@ -78,7 +78,7 @@ int main() {
     int members_per_thread = (int)(seq_members_count / threads_count);
     //Если число членов не делится на число потоков нацело, появляются неучтенные члены
     if (seq_members_count % threads_count != 0) {
-        unaccounted_members_count = threads_count - members_per_thread;
+        unaccounted_members_count = threads_count % members_per_thread;
     }
     cout << "\n [DEBUG]: Количество членов на поток " + to_string(members_per_thread);
     cout << "\n [DEBUG]: Количество неучтенных членов " + to_string(unaccounted_members_count);

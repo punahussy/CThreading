@@ -43,10 +43,10 @@ void create_run_threads() {
 }
 
 int main() {
-    thread_letters[0] = 'A';
-    thread_letters[1] = 'B';
-    thread_letters[2] = 'C';
-    thread_letters[3] = 'D';
+    string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    for (int i = 0; i < THREAD_COUNT; i++) {
+        thread_letters[i] = alphabet[i];
+    }
 
     create_run_threads();
     cout << _string << "\n";

@@ -7,39 +7,75 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <queue>
+#include <list>
+#include <mutex>
+#include <fstream>
 
 using namespace std;
 
 #define DATABASE_SIZE 64
-#define WRITE_OPERATIONS 5
-#define READ_OPERATIONS 15
-#define WRITERS_READERS_CNT 3
+#define WRITE_OPERATIONS 4
+#define READ_OPERATIONS 4
+#define WRITERS_READERS_CNT 18
 
 string thread_symbols = "ABCDEFGHIJKLMNOPRSTUVWXYZ";
+pthread_mutex_t database_locker;
+
+ofstream db_log;
+
+struct Operation {
+    void *function;
+    void *args;
+};
 
 //Инкапсулированная в виде базы данных очередь символов
 class Database {
     private:
-        queue<char> data;  
-        int dataWritten = 0;   
+        queue<char> data;
+        queue<Operation> readQueue;
+        int dataWritten = 0;
+        bool busy = false;
     public:
         //Запись данных в базу
         void Write(char toWrite) {
-            if (data.size() < DATABASE_SIZE) {
-                data.push(toWrite);
-                dataWritten++;
+            pthread_mutex_lock(&database_locker); 
+            {
+                if (data.size() < DATABASE_SIZE) {
+                    data.push(toWrite);
+                    dataWritten++;
+                }
             }
+            pthread_mutex_unlock(&database_locker);
         }
+        //Чтение из базы
         char Read() {
+            if (busy) {
+                readQueue.push(Operation());
+            }
+            while (busy) {
+                usleep(25);
+            }
+            busy = true;
             if (data.size() > 0) {
                 char read_data = data.front();
                 data.pop();
                 dataWritten--;
+                busy = false;
                 return read_data;
             }
-            else return '\n';
+            busy = false;
+            return '\t';
         }
-        int GetDataWritten() {
+
+        void ConnectionOpen() {
+            usleep(250);
+        }
+        
+        void ConnectionClose() {
+            usleep(250);
+        }
+
+        int GetWrittenDataAmount() {
             return dataWritten;
         }
 };
@@ -57,6 +93,7 @@ void *Writer(void *args) {
         msg.append(" в потоке ");
         msg.append(to_string(*writer_Id));
         cout << msg +"\n";
+        db_log << msg + "\n";
         sleep(1);
     }
     return 0;
@@ -64,10 +101,14 @@ void *Writer(void *args) {
 
 //Метод чтения для потока
 void *Reader(void* args) {
+    int *writer_Id = (int *) args;
     for (int i = 0; i < READ_OPERATIONS; i++) {
         char data = db.Read();
-        cout << 
-            to_string(i) + ") Считано символ" + to_string(data) + "  \n";
+        string msg = "Считан символ ";
+        msg.append(1, data);
+        msg += " в потоке " + to_string(*writer_Id) +  "\n";
+        cout << msg;
+        db_log << msg;
         sleep(1);
     }
     return 0;
@@ -89,7 +130,7 @@ void *init_writers(void *args) {
 void *init_readers(void *args) {
     pthread_t readers[WRITERS_READERS_CNT];
     for (int i = 0; i < WRITERS_READERS_CNT; i++) {
-        pthread_create(&readers[i], NULL, Reader, NULL);
+        pthread_create(&readers[i], NULL, Reader, &i);
     }
     for (int j = 0; j < WRITERS_READERS_CNT; j++) {
         pthread_join(readers[j], NULL);
@@ -100,18 +141,21 @@ void *init_readers(void *args) {
 //Параллельно создает читателей и писателей
 void InitThreads() {
     pthread_t writers_creator;
-    //pthread_t readers_creator;
+    pthread_t readers_creator;
+    pthread_mutex_init(&database_locker, NULL);
     pthread_create(&writers_creator, NULL, init_writers, NULL);
-    //pthread_create(&readers_creator, NULL, init_readers, NULL);
+    pthread_create(&readers_creator, NULL, init_readers, NULL);
     pthread_join(writers_creator, NULL);
-    //pthread_join(readers_creator, NULL);
+    pthread_join(readers_creator, NULL);
 }
 
 
 
 int main() {
+    db_log.open("log.txt");
     InitThreads();
-    cout << "Записано информации: " + to_string(db.GetDataWritten()) + " символов \n";
+    cout << "Записано информации: " + to_string(db.GetWrittenDataAmount()) + " символов \n";
+    db_log.close();
     return 1;
 }
 

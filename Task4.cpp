@@ -1,161 +1,144 @@
-#include <stdio.h>
-#include <stdlib.h>
 #include <iostream>
-#include <random>
-#include <string>
-#include <algorithm>
-#include <unistd.h>
+#include <cstdlib>
 #include <pthread.h>
+#include <unistd.h>
 #include <queue>
-#include <list>
-#include <mutex>
-#include <fstream>
+#include <sstream>
 
 using namespace std;
 
-#define DATABASE_SIZE 64
-#define WRITE_OPERATIONS 4
-#define READ_OPERATIONS 4
-#define WRITERS_READERS_CNT 18
-
-string thread_symbols = "ABCDEFGHIJKLMNOPRSTUVWXYZ";
-pthread_mutex_t database_locker;
-
-ofstream db_log;
-
-struct Operation {
-    void *function;
-    void *args;
+//база данных
+queue<string> Common_data;
+//очередь читателей
+queue<int> Readers_queue;
+//параметры базы данных и читателей-писателей
+int Data_size = 0;
+int Reader_threads_count = 0;
+int Reader_part_size = 0;
+int Writer_threads_count = 0;
+int Writer_part_size = 0;
+//мьютексы
+pthread_mutex_t Common_mutex;
+pthread_mutex_t Read_mutex;
+//структура, хранящая данные потока
+struct thread_data {
+    string unique_char = "";
+    string received_data = "";
+    int thread_id;
 };
 
-//Инкапсулированная в виде базы данных очередь символов
-class Database {
-    private:
-        queue<char> data;
-        queue<Operation> readQueue;
-        int dataWritten = 0;
-        bool busy = false;
-    public:
-        //Запись данных в базу
-        void Write(char toWrite) {
-            pthread_mutex_lock(&database_locker); 
-            {
-                if (data.size() < DATABASE_SIZE) {
-                    data.push(toWrite);
-                    dataWritten++;
-                }
-            }
-            pthread_mutex_unlock(&database_locker);
-        }
-        //Чтение из базы
-        char Read() {
-            if (busy) {
-                readQueue.push(Operation());
-            }
-            while (busy) {
-                usleep(25);
-            }
-            busy = true;
-            if (data.size() > 0) {
-                char read_data = data.front();
-                data.pop();
-                dataWritten--;
-                busy = false;
-                return read_data;
-            }
-            busy = false;
-            return '\t';
-        }
-
-        void ConnectionOpen() {
-            usleep(250);
-        }
-        
-        void ConnectionClose() {
-            usleep(250);
-        }
-
-        int GetWrittenDataAmount() {
-            return dataWritten;
-        }
-};
-
-Database db;
-
-//Метод записи для потока
-void *Writer(void *args) {
-    int *writer_Id = (int *) args;
-    for (int i = 0; i < WRITE_OPERATIONS; i++) {
-        char data = thread_symbols.at(*writer_Id);
-        db.Write(data);
-        string msg = "Записан символ ";
-        msg.append(1, data);
-        msg.append(" в потоке ");
-        msg.append(to_string(*writer_Id));
-        cout << msg +"\n";
-        db_log << msg + "\n";
-        sleep(1);
-    }
+void* OpenConnection(pthread_mutex_t *mutex) {
+    pthread_mutex_lock(&(*mutex));
     return 0;
 }
 
-//Метод чтения для потока
-void *Reader(void* args) {
-    int *writer_Id = (int *) args;
-    for (int i = 0; i < READ_OPERATIONS; i++) {
-        char data = db.Read();
-        string msg = "Считан символ ";
-        msg.append(1, data);
-        msg += " в потоке " + to_string(*writer_Id) +  "\n";
-        cout << msg;
-        db_log << msg;
-        sleep(1);
-    }
+void* CloseConnection(pthread_mutex_t *mutex) {
+    pthread_mutex_unlock(&(*mutex));
+    usleep(1000);
     return 0;
 }
 
-//Создание писателей
-void *init_writers(void *args) {
-    pthread_t writers[WRITERS_READERS_CNT];
-    for (int i = 0; i < WRITERS_READERS_CNT; i++) {
-        pthread_create(&writers[i], NULL, Writer, &i);
+void* Write(void *arg) {
+    auto *thread_arg = static_cast<thread_data*>(arg);
+    int i = 0;
+    while(i < Writer_part_size) {
+        OpenConnection(&Common_mutex);
+        if(Common_data.size() < Data_size) {
+            cout << "Write " << thread_arg->unique_char << endl;
+            usleep(1000);
+            Common_data.push(thread_arg->unique_char);
+            i++;
+        }
+        else if (Reader_threads_count <= 0)
+            i++;
+
+        CloseConnection(&Common_mutex);
     }
-    for (int j = 0; j < WRITERS_READERS_CNT; j++) {
-        pthread_join(writers[j], NULL);
-    }    
+    Writer_threads_count--;
     return 0;
 }
 
-//Создание читателей
-void *init_readers(void *args) {
-    pthread_t readers[WRITERS_READERS_CNT];
-    for (int i = 0; i < WRITERS_READERS_CNT; i++) {
-        pthread_create(&readers[i], NULL, Reader, &i);
+void* Read(void *arg) {
+    thread_data *thread_arg = (thread_data *) arg;
+    int i = 0;
+    while(i < Reader_part_size) {
+        pthread_mutex_lock(&(Read_mutex));
+        Readers_queue.push(thread_arg->thread_id);
+        pthread_mutex_unlock(&(Read_mutex));
+        while (Readers_queue.front() != thread_arg->thread_id) {}
+        OpenConnection(&Common_mutex);
+        if (Common_data.size() > 0) {
+            string current_symbol = Common_data.front();
+            thread_arg->received_data += Common_data.front();
+            usleep(1000);
+            Common_data.pop();
+            cout << "Read " << current_symbol << endl;
+            i++;
+        } else if (Writer_threads_count <= 0) i++;
+        CloseConnection(&Common_mutex);
+        pthread_mutex_lock(&(Read_mutex));
+        Readers_queue.pop();
+        pthread_mutex_unlock(&(Read_mutex));
     }
-    for (int j = 0; j < WRITERS_READERS_CNT; j++) {
-        pthread_join(readers[j], NULL);
-    }    
+    Reader_threads_count--;
     return 0;
 }
 
-//Параллельно создает читателей и писателей
-void InitThreads() {
-    pthread_t writers_creator;
-    pthread_t readers_creator;
-    pthread_mutex_init(&database_locker, NULL);
-    pthread_create(&writers_creator, NULL, init_writers, NULL);
-    pthread_create(&readers_creator, NULL, init_readers, NULL);
-    pthread_join(writers_creator, NULL);
-    pthread_join(readers_creator, NULL);
+int main(int argc, char** argv) {
+    int readers_amount = 0;
+    int writers_amount = 0;
+    cout << "Enter db size: ";
+    cin >> Data_size;
+    cout << "Enter num of readers: ";
+    cin >> readers_amount;
+    cout << "Enter part of data to read: ";
+    cin >> Reader_part_size;
+    cout << "Enter num of writers: ";
+    cin >> writers_amount;
+    cout << "Enter part of data to write: ";
+    cin >> Writer_part_size;
+
+    int threads_number = writers_amount + readers_amount;
+    Reader_threads_count = readers_amount;
+    Writer_threads_count = writers_amount;
+
+    pthread_mutex_init(&(Common_mutex), NULL);
+    pthread_mutex_init(&(Read_mutex), NULL);
+
+    pthread_t threads[threads_number];
+    thread_data thread_arg[threads_number];
+
+    for (int i = 0; i < writers_amount; i++) {
+        stringstream unic_symbol;
+        unic_symbol << "thread_" << i;
+        thread_arg[i].unique_char = unic_symbol.str();
+        thread_arg[i].thread_id = i;
+        pthread_create(&threads[i], nullptr, Write, &thread_arg[i]);
+    }
+
+    for (int i = writers_amount; i < threads_number; i++) {
+        thread_arg[i].thread_id = i;
+        pthread_create(&threads[i], nullptr, Read, &thread_arg[i]);
+    }
+
+    for (int i = 0; i < threads_number; i++)
+        pthread_join(threads[i], 0);
+
+    stringstream dataResult;
+    for (int i = 0; i < threads_number; i++)
+        dataResult << thread_arg[i].received_data;
+    cout << "info read: " << dataResult.str() + "\n";
+
+    stringstream result_string;
+    Data_size = Common_data.size();
+    for (int m = 0; m < Data_size; m++) {
+        result_string << Common_data.front();
+        Common_data.pop();
+    }
+
+    cout << "result: " << result_string.str();
+
+    pthread_mutex_destroy(&(Common_mutex));
+    pthread_mutex_destroy(&(Read_mutex));
+    return 0;
 }
-
-
-
-int main() {
-    db_log.open("log.txt");
-    InitThreads();
-    cout << "Записано информации: " + to_string(db.GetWrittenDataAmount()) + " символов \n";
-    db_log.close();
-    return 1;
-}
-
